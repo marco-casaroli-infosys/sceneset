@@ -519,7 +519,11 @@ bool SceneSetApp::registerForPackageInstallerEvents() {
         m_packageInstallerEventHandler = std::make_shared<PackageInstallerEventHandler>();
     }
     if (m_packageInstaller != nullptr) {
-        m_packageInstaller->Register(m_packageInstallerEventHandler.get());
+        const Core::hresult result = m_packageInstaller->Register(m_packageInstallerEventHandler.get());
+        if (result != Core::ERROR_NONE) {
+            std::cerr << "PackageManager Register failed: " << result << std::endl;
+            return false;
+        }
         return true;
     }
     return false;
@@ -675,6 +679,9 @@ void SceneSetApp::markFactoryAppsCopied() {
     if (markerFile.is_open()) {
         markerFile << "Factory apps copied on first boot" << std::endl;
         markerFile.close();
+        if (!flushFileData(markerPath)) {
+            std::cerr << "Failed to flush factory apps marker file at: " << markerPath << std::endl;
+        }
         std::cout << "Factory apps marker file created at: " << markerPath << std::endl;
     } else {
         std::cerr << "Failed to create factory apps marker file at: " << markerPath << std::endl;
@@ -851,6 +858,7 @@ bool SceneSetApp::copyFactoryAppsToPreinstall() {
 
     // Copy bundle files from factory location to preinstall folder
     int fileCount = 0;
+    int failedCount = 0;
 
     try {
         for (const auto& entry : fs::directory_iterator(sourcePath)) {
@@ -874,6 +882,7 @@ bool SceneSetApp::copyFactoryAppsToPreinstall() {
             } catch (const fs::filesystem_error& e) {
                 std::cerr << "Failed to copy bundle: " << fileName
                           << " - " << e.what() << std::endl;
+                failedCount++;
             }
         }
     } catch (const fs::filesystem_error& e) {
@@ -886,11 +895,26 @@ bool SceneSetApp::copyFactoryAppsToPreinstall() {
     } else {
         std::cout << "No factory app bundles found to copy" << std::endl;
     }
-#if !ENABLE_FIRMWARE_CHANGE_DETECTION
-    // Firmware path records the version only after a successful preinstall (completeStartupAfterPreinstall).
-    markFactoryAppsCopied();
-#endif
+    // The first boot is only recorded once the preinstall has succeeded (completeStartupAfterPreinstall):
+    // marking it here would make an interrupted first boot look complete.
+    if (failedCount > 0) {
+        std::cerr << "Failed to copy " << failedCount << " factory app bundles" << std::endl;
+        return false;
+    }
     return true;
+}
+
+// First boot: copy the factory apps to the preinstall folder. With the marker strategy the first boot is
+// recorded only after the copy and the forced preinstall succeeded (completeStartupAfterPreinstall).
+void SceneSetApp::prepareFactoryAppsForFirstBoot() {
+    std::cout << "First boot/Factory reset detected. Copying factory apps to preinstall folder." << std::endl;
+    const bool factoryAppsCopied = copyFactoryAppsToPreinstall();
+    if (!factoryAppsCopied) {
+        std::cerr << "Failed to copy factory apps. Continuing with preinstall anyway." << std::endl;
+    }
+#if !ENABLE_FIRMWARE_CHANGE_DETECTION
+    m_startupPreinstallState.markFactoryAppsCopiedOnSuccess = factoryAppsCopied;
+#endif
 }
 
 void SceneSetApp::cleanupPreinstallFolder() {
@@ -954,9 +978,16 @@ void SceneSetApp::completeStartupAfterPreinstall() {
     std::cout << "Preinstall phase finished. Continuing startup flow." << std::endl;
     if (isStartupPreinstallSucceed()) {
         cleanupPreinstallFolder();
+        // The installed packages must be on disk before the first boot is recorded as done:
+        // after a power loss the next boot would otherwise skip packages left empty or partial.
+        ::sync();
 #if ENABLE_FIRMWARE_CHANGE_DETECTION
         // Record the firmware as the new datasource only after preinstall succeeds.
         storeCurrentFirmwareVersion();
+#else
+        if (m_startupPreinstallState.markFactoryAppsCopiedOnSuccess.exchange(false)) {
+            markFactoryAppsCopied();
+        }
 #endif
     } else {
         std::cerr << "Startup preinstall reported a failure state before completion. Preserving files in preinstall folder for retry." << std::endl;
@@ -970,6 +1001,14 @@ void SceneSetApp::completeStartupAfterPreinstall() {
 
 void SceneSetApp::resetStartupPreinstallStatusTracking() {
     m_startupPreinstallState.hasFailure = false;
+}
+
+void SceneSetApp::beginStartupPreinstallStatusTracking(bool statusEventsRegistered) {
+    resetStartupPreinstallStatusTracking();
+    if (!statusEventsRegistered) {
+        // Without package status events a failed install cannot be detected: treat the preinstall as unverified.
+        m_startupPreinstallState.hasFailure = true;
+    }
 }
 
 void SceneSetApp::recordStartupPreinstallStatus(const std::string& jsonresponse) {
@@ -1160,10 +1199,7 @@ void SceneSetApp::run() {
 
     // Copy factory apps to preinstall folder on first boot only
     if (isFactoryReset) {
-        std::cout << "First boot/Factory reset detected. Copying factory apps to preinstall folder." << std::endl;
-        if (!copyFactoryAppsToPreinstall()) {
-            std::cerr << "Failed to copy factory apps. Continuing with preinstall anyway." << std::endl;
-        }
+        prepareFactoryAppsForFirstBoot();
     } else {
         std::cout << "Not a first boot. Skipping factory app copy." << std::endl;
     }
@@ -1171,7 +1207,7 @@ void SceneSetApp::run() {
     // Start preinstall asynchronously.
     // Use forceInstall=true for FSR cases (force reinstall all packages)
     // Use forceInstall=false for normal boots (only install if newer version)
-    resetStartupPreinstallStatusTracking();
+    beginStartupPreinstallStatusTracking(packageInstallerEventsRegistered);
     m_startupPreinstallState.waitingForCompletion = true;
     std::cout << "Starting preinstall process and waiting for OnPreinstallationComplete" << std::endl;
     if (!startPreinstall(isFactoryReset)) {

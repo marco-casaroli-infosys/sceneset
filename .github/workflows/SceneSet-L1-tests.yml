@@ -273,6 +273,12 @@ jobs:
           cp -rf $(pwd)/scenesetL1TestResults.json $GITHUB_WORKSPACE/scenesetL1TestResultsWithoutValgrind.json &&
           rm -rf $(pwd)/scenesetL1TestResults.json
 
+      - name: Run SceneSet first-boot marker unit tests
+        run: >
+          PATH=$GITHUB_WORKSPACE/install/usr/bin:${PATH}
+          LD_LIBRARY_PATH=$GITHUB_WORKSPACE/install/usr/lib:$GITHUB_WORKSPACE/install/usr/lib/wpeframework/plugins:${LD_LIBRARY_PATH}
+          SceneSetL1TestsMarkerIN
+
       - name: Run SceneSet unit tests with valgrind
         if: ${{ !env.ACT }}
         run: >

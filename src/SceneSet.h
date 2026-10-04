@@ -74,6 +74,7 @@ public:
     std::string readLastBootFirmwareVersion() const;
     void storeCurrentFirmwareVersion();
     bool copyFactoryAppsToPreinstall();
+    void prepareFactoryAppsForFirstBoot();
     void cleanupPreinstallFolder();
     void waitForTermSignal();
     static void handleTerminationSignal(int signal);
@@ -96,6 +97,7 @@ private:
         std::mutex completionThreadMutex;
         std::atomic<bool> waitingForCompletion { false };
         std::atomic<bool> hasFailure { false };
+        std::atomic<bool> markFactoryAppsCopiedOnSuccess { false };
     };
 
     struct TelemetryMetricsState {
@@ -147,6 +149,7 @@ private:
     void stopPreinstallCompletionThread();
     void completeStartupAfterPreinstall();
     void resetStartupPreinstallStatusTracking();
+    void beginStartupPreinstallStatusTracking(bool statusEventsRegistered);
     void recordStartupPreinstallStatus(const std::string& jsonresponse);
     bool isStartupPreinstallSucceed() const;
     void monitorDownloadDirectory();

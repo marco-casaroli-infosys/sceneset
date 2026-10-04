@@ -425,7 +425,7 @@ jobs:
    TEST(FactoryResetTest, FirstBootCopiesFactoryApps) {
        // Setup: No marker file, factory apps exist
        // Action: Simulate startup
-       // Verify: Apps copied, marker created
+       // Verify: Apps copied, marker created only after a successful preinstall
    }
    ```
 
